@@ -32,7 +32,7 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 
 # --- Sozlamalar ---
-BOT_TOKEN = "8157054894:AAFjY6XsRrkPcKLT9ksx-06W8zKY-2yw6ps"
+BOT_TOKEN = "8157054894:AAHaWPEnHjWjFjNajacKY42_XH21vBX8_iY"
 API_BASE_URL = "https://ramazon-taqvimi-2026.onrender.com/api"
 AREAS_URL = f"{API_BASE_URL}/areas"
 PORT = int(os.environ.get('PORT', 8443))
@@ -69,6 +69,12 @@ async def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
         await conn.commit()
 
 async def save_user_location(user_id: int, region: str, district: str):
@@ -91,6 +97,28 @@ async def get_user_location(user_id: int) -> Optional[Tuple[str, str]]:
         )
         row = await cursor.fetchone()
         return row if row else None
+
+async def save_setting(key: str, value: str):
+    async with get_db_connection() as conn:
+        await conn.execute("""
+            INSERT INTO settings (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """, (key, value))
+        await conn.commit()
+
+async def get_setting(key: str) -> Optional[str]:
+    async with get_db_connection() as conn:
+        cursor = await conn.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
+async def save_apk_info(file_id: str, file_name: str, unique_id: str):
+    await save_setting("apk_file_id", file_id)
+    await save_setting("apk_file_name", file_name or "")
+    await save_setting("apk_unique_id", unique_id or "")
+
+async def get_apk_file_id() -> Optional[str]:
+    return await get_setting("apk_file_id")
 
 # --- API dan hududlar olish ---
 def fetch_areas() -> Optional[Dict[str, List[str]]]:
@@ -305,9 +333,8 @@ def build_format_keyboard() -> InlineKeyboardMarkup:
 
 def build_main_reply_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
-         [KeyboardButton("📍 Hudud")],
-         [KeyboardButton("🗓️ Taqvim")],
-         [KeyboardButton("🌅 Bugun")]
+         [KeyboardButton("📍 Hudud"), KeyboardButton("🗓️ Taqvim")],
+         [KeyboardButton("🌅 Bugun"), KeyboardButton("📲 APK yuklash")],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 # --- HANDLERLAR ---
@@ -554,6 +581,30 @@ async def text_buttons_handler(update: Update, context: CallbackContext):
         return await taqvim(update, context)
     if text in ("🌅 Bugun", "Bugun"):
         return await bugun(update, context)
+    if text in ("📲 APK", "APK", "📲 APK yuklash"):
+        return await send_apk(update, context)
+
+async def apk_upload(update: Update, context: CallbackContext):
+    doc = update.message.document
+    if not doc:
+        return
+    fname = doc.file_name or ""
+    mime = doc.mime_type or ""
+    if not (fname.lower().endswith(".apk") or mime == "application/vnd.android.package-archive"):
+        return
+    existing = await get_apk_file_id()
+    if existing:
+        await update.message.reply_text("  ")
+        return
+    await save_apk_info(doc.file_id, fname, doc.file_unique_id or "")
+    await update.message.reply_text("APK saqlandi. Endi 📲 APK yuklash tugmasi orqali ulashish mumkin.")
+
+async def send_apk(update: Update, context: CallbackContext):
+    file_id = await get_apk_file_id()
+    if not file_id:
+        await update.message.reply_text("APK hali yuborilmagan. Avval botga .apk fayl yuboring.")
+        return
+    await context.bot.send_document(chat_id=update.effective_chat.id, document=file_id, caption="Nurli Ramazon ilovasi")
 
 async def post_init(application: Application) -> None:
     """Bot ishga tushganda ma'lumotlar bazasini yaratish"""
@@ -594,6 +645,7 @@ def main() -> None:
     application.add_handler(CommandHandler("taqvim", taqvim))
     application.add_handler(CommandHandler("bugun", bugun))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_buttons_handler))
+    application.add_handler(MessageHandler(filters.Document.ALL, apk_upload))
     application.add_handler(CallbackQueryHandler(format_callback, pattern="^(format_pdf|format_jpg|cancel_format)$"))
 
     # Webhook yoki polling
@@ -609,7 +661,7 @@ def main() -> None:
         )
         logger.info(f"Bot webhook bilan ishga tushdi: {WEBHOOK_URL}")
     else:
-        # Polling rejimi (localhostda test qilish uchun)
+        # Polling rejimi (localhostda test qilish uchun) polling 
         logger.info("Bot polling bilan ishga tushdi")
         application.run_polling(allowed_updates=Update.ALL_TYPES)
 
