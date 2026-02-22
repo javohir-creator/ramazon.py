@@ -1,0 +1,7 @@
+python-telegram-bot
+requests
+aiosqlite
+Pillow
+matplotlib
+numpy
+reportlab
